@@ -16,8 +16,10 @@ RUN npm ci && npm cache clean --force
 # Copy prisma schema
 COPY prisma ./prisma/
 
+ENV NODE_TLS_REJECT_UNAUTHORIZED=0
+RUN npm config set strict-ssl false
 # Generate Prisma Client
-RUN npx prisma generate
+RUN npx prisma@5 generate
 
 # Copy source code
 COPY src ./src
