@@ -6,6 +6,7 @@ import {
   Excalidraw,
   convertToExcalidrawElements,
   exportToSvg,
+  FONT_FAMILY,
   viewportCoordsToSceneCoords,
 } from '@excalidraw/excalidraw';
 import debounce from 'lodash/debounce';
@@ -46,6 +47,28 @@ type DroppedImageData = {
   created: number;
   width: number;
   height: number;
+};
+
+const FONT_UPLOAD_STORAGE_KEY = "excalidash:editor:imported-fonts";
+const FONT_SLOTS = ["Virgil", "Helvetica", "Cascadia", "Assistant"] as const;
+type FontSlot = (typeof FONT_SLOTS)[number];
+
+type ImportedFont = {
+  customName: string;
+  mimeType: string;
+  dataURL: string;
+};
+
+const isFontSlot = (value: string): value is FontSlot =>
+  FONT_SLOTS.includes(value as FontSlot);
+
+const getFontFormat = (mimeType: string, filename: string): string => {
+  const lowered = `${mimeType} ${filename}`.toLowerCase();
+  if (lowered.includes("woff2")) return "woff2";
+  if (lowered.includes("woff")) return "woff";
+  if (lowered.includes("opentype") || lowered.endsWith(".otf")) return "opentype";
+  if (lowered.includes("truetype") || lowered.endsWith(".ttf")) return "truetype";
+  return "truetype";
 };
 
 const toFiniteNumber = (value: any): number => {
@@ -185,6 +208,9 @@ export const Editor: React.FC = () => {
   const [isSavingOnLeave, setIsSavingOnLeave] = useState(false);
   const [autoHideEnabled, setAutoHideEnabled] = useState(getStoredAutoHideEnabled);
   const [isShareOpen, setIsShareOpen] = useState(false);
+  const [selectedFontSlot, setSelectedFontSlot] = useState<FontSlot>("Virgil");
+  const [importedFonts, setImportedFonts] = useState<Partial<Record<FontSlot, ImportedFont>>>({});
+  const fontFileInputRef = useRef<HTMLInputElement | null>(null);
   const { isHeaderVisible, setIsHeaderVisible } = useEditorChrome({
     drawingName,
     autoHideEnabled,
@@ -240,6 +266,70 @@ export const Editor: React.FC = () => {
   useEffect(() => {
     setAutoHideEnabled(getStoredAutoHideEnabled());
   }, [getStoredAutoHideEnabled]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(FONT_UPLOAD_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, ImportedFont>;
+      const normalized: Partial<Record<FontSlot, ImportedFont>> = {};
+      for (const [slot, payload] of Object.entries(parsed || {})) {
+        if (!isFontSlot(slot)) continue;
+        if (!payload || typeof payload !== "object") continue;
+        if (typeof payload.dataURL !== "string" || !payload.dataURL.startsWith("data:")) continue;
+        normalized[slot] = {
+          customName:
+            typeof payload.customName === "string" && payload.customName.trim()
+              ? payload.customName.trim()
+              : slot,
+          mimeType:
+            typeof payload.mimeType === "string" && payload.mimeType.trim()
+              ? payload.mimeType
+              : "font/ttf",
+          dataURL: payload.dataURL,
+        };
+      }
+      setImportedFonts(normalized);
+    } catch (error) {
+      console.warn("Failed to restore imported fonts", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (Object.keys(importedFonts).length === 0) {
+        window.localStorage.removeItem(FONT_UPLOAD_STORAGE_KEY);
+        return;
+      }
+      window.localStorage.setItem(FONT_UPLOAD_STORAGE_KEY, JSON.stringify(importedFonts));
+    } catch (error) {
+      console.warn("Failed to persist imported fonts", error);
+    }
+  }, [importedFonts]);
+
+  useEffect(() => {
+    const styleId = "excalidash-imported-fonts-style";
+    const existing = document.getElementById(styleId);
+    if (existing) existing.remove();
+
+    const cssBlocks = FONT_SLOTS.map((slot) => {
+      const font = importedFonts[slot];
+      if (!font?.dataURL) return "";
+      const fontFormat = getFontFormat(font.mimeType, font.customName);
+      return `@font-face { font-family: '${slot}'; src: url('${font.dataURL}') format('${fontFormat}'); font-weight: normal; font-style: normal; font-display: swap; }`;
+    })
+      .filter(Boolean)
+      .join("\n");
+
+    if (!cssBlocks) return;
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = cssBlocks;
+    document.head.appendChild(style);
+    return () => {
+      style.remove();
+    };
+  }, [importedFonts]);
 
   const getRenderableBaselineSnapshot = useCallback((): readonly any[] => {
     if (hasRenderableElements(lastPersistedElementsRef.current)) {
@@ -1666,6 +1756,52 @@ export const Editor: React.FC = () => {
     }
   };
 
+  const handleOpenFontImporter = useCallback(() => {
+    fontFileInputRef.current?.click();
+  }, []);
+
+  const handleImportFontFile = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const acceptedByType =
+      typeof file.type === "string" &&
+      /(font\/|application\/font|application\/x-font|application\/octet-stream)/i.test(file.type);
+    const acceptedByName = /\.(ttf|otf|woff2?)$/i.test(file.name);
+
+    if (!acceptedByType && !acceptedByName) {
+      toast.error("仅支持导入 TTF / OTF / WOFF / WOFF2 字体文件。");
+      return;
+    }
+
+    try {
+      const dataURL = await readFileAsDataURL(file);
+      const customName = file.name.replace(/\.[^/.]+$/, "").trim() || selectedFontSlot;
+      setImportedFonts((prev) => ({
+        ...prev,
+        [selectedFontSlot]: {
+          customName,
+          mimeType: file.type || "font/ttf",
+          dataURL,
+        },
+      }));
+      toast.success(`已导入字体：${customName}（映射到 ${selectedFontSlot}）`);
+    } catch (error) {
+      console.error("Failed to import font", error);
+      toast.error("字体导入失败，请重试。");
+    }
+  }, [selectedFontSlot]);
+
+  const handleRemoveImportedFont = useCallback((slot: FontSlot) => {
+    setImportedFonts((prev) => {
+      const next = { ...prev };
+      delete next[slot];
+      return next;
+    });
+    toast.success(`已移除 ${slot} 的自定义字体映射`);
+  }, []);
+
   return (
     <div className="h-screen flex flex-col bg-white dark:bg-neutral-950 overflow-hidden">
       <header 
@@ -1726,6 +1862,51 @@ export const Editor: React.FC = () => {
             >
               <Share2 size={20} />
             </button>
+          ) : null}
+          {canEdit ? (
+            <div className="hidden lg:flex items-center gap-2 px-2 py-1 rounded-lg border border-gray-200 dark:border-neutral-700 bg-gray-50/60 dark:bg-neutral-800/60">
+              <input
+                ref={fontFileInputRef}
+                type="file"
+                accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2"
+                onChange={handleImportFontFile}
+                className="hidden"
+              />
+              <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">
+                Font Slot
+              </span>
+              <select
+                value={selectedFontSlot}
+                onChange={(event) => setSelectedFontSlot(event.target.value as FontSlot)}
+                className="h-8 px-2 text-xs rounded-md border border-gray-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-gray-800 dark:text-gray-100"
+                title="Select Excalidraw font slot"
+              >
+                {FONT_SLOTS.map((slot) => (
+                  <option key={slot} value={slot}>
+                    {slot}
+                    {importedFonts[slot] ? ` · ${importedFonts[slot]?.customName}` : ""}
+                    {` (#${FONT_FAMILY[slot]})`}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={handleOpenFontImporter}
+                className="h-8 px-2 text-xs font-semibold rounded-md border border-gray-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-gray-800 dark:text-gray-100 hover:bg-gray-100 dark:hover:bg-neutral-700 transition-colors whitespace-nowrap"
+                title="Import custom font to selected slot"
+                type="button"
+              >
+                导入字体
+              </button>
+              <button
+                onClick={() => handleRemoveImportedFont(selectedFontSlot)}
+                disabled={!importedFonts[selectedFontSlot]}
+                className="h-8 px-2 text-xs font-semibold rounded-md border border-gray-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-neutral-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                title="Remove imported font for selected slot"
+                type="button"
+              >
+                清除
+              </button>
+            </div>
           ) : null}
           <button
             onClick={() => {
