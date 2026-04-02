@@ -6,7 +6,6 @@ import {
   Excalidraw,
   convertToExcalidrawElements,
   exportToSvg,
-  FONT_FAMILY,
   viewportCoordsToSceneCoords,
 } from '@excalidraw/excalidraw';
 import debounce from 'lodash/debounce';
@@ -52,6 +51,12 @@ type DroppedImageData = {
 const FONT_UPLOAD_STORAGE_KEY = "excalidash:editor:imported-fonts";
 const FONT_SLOTS = ["Virgil", "Helvetica", "Cascadia", "Assistant"] as const;
 type FontSlot = (typeof FONT_SLOTS)[number];
+const FONT_SLOT_LABELS: Record<FontSlot, string> = {
+  Virgil: "#1",
+  Helvetica: "#2",
+  Cascadia: "#3",
+  Assistant: "#4",
+};
 
 type ImportedFont = {
   customName: string;
@@ -1885,7 +1890,7 @@ export const Editor: React.FC = () => {
                   <option key={slot} value={slot}>
                     {slot}
                     {importedFonts[slot] ? ` · ${importedFonts[slot]?.customName}` : ""}
-                    {` (#${FONT_FAMILY[slot]})`}
+                    {` (${FONT_SLOT_LABELS[slot]})`}
                   </option>
                 ))}
               </select>
