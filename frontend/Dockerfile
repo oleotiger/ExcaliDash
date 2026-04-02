@@ -6,8 +6,9 @@ WORKDIR /app/frontend
 # Copy package files first for better caching
 COPY frontend/package*.json ./
 
+ENV NODE_ENV=development
 # Install dependencies
-RUN npm ci && npm cache clean --force
+RUN npm install && npm cache clean --force
 
 # Copy source code and config files
 COPY frontend/ ./
@@ -20,7 +21,10 @@ ENV VITE_APP_VERSION=$VITE_APP_VERSION
 ENV VITE_APP_BUILD_LABEL=$VITE_APP_BUILD_LABEL
 
 # Build the application
-RUN npm run build
+#RUN npm run build
+RUN npm config set strict-ssl false && \
+    NODE_ENV=development npm install --include=dev && \
+    npm run build
 
 # Production stage
 FROM nginx:alpine
